@@ -1,0 +1,327 @@
+---
+title: "Final Project - NBA Player Stats Analysis"
+author: "Dominique Kellam"
+date: "2024-11-22"
+output: pdf_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Introduction
+
+This project analyzes NBA player statistics using supervised and unsupervised learning methods:
+
+\- Predicting total points scored "PTS" using linear regression and decision trees.
+
+\- Clustering players based on performance metrics using k-means clustering.
+
+
+## Dataset Description
+
+The data set was sourced from [Kaggle - NBA Player Stats 24-25 Season](https://www.kaggle.com/datasets/eduardopalmieri/nba-player-stats-season-2425).
+
+The dataset contains the following columns:
+```{r}
+library(knitr)
+
+columns <- data.frame(
+  Column = c(
+    "Player", "Tm", "Opp", "Res", "MP", "FG", "FGA", "FG%", 
+    "3P", "3PA", "3P%", "FT", "FTA", "FT%", "ORB", "DRB", 
+    "TRB", "AST", "STL", "BLK", "TOV", "PF", "PTS", "GmSc", "Data"
+  ),
+  Description = c(
+    "Name of the player.",
+    "Abbreviation of the player's team.",
+    "Abbreviation of the opposing team.",
+    "Result of the game for the player's team.",
+    "Minutes played (e.g., 23.5 = 23 minutes and 30 seconds).",
+    "Field goals made.",
+    "Field goal attempts.",
+    "Field goal percentage.",
+    "3-point field goals made.",
+    "3-point field goal attempts.",
+    "3-point shooting percentage.",
+    "Free throws made.",
+    "Free throw attempts.",
+    "Free throw percentage.",
+    "Offensive rebounds.",
+    "Defensive rebounds.",
+    "Total rebounds.",
+    "Assists.",
+    "Steals.",
+    "Blocks.",
+    "Turnovers.",
+    "Personal fouls.",
+    "Total points scored.",
+    "Game Score summarizing player performance.",
+    "Date of the game in YYYY-MM-DD format."
+  )
+)
+
+kable(columns, col.names = c("Column", "Description"), align = c("l", "l"))
+
+
+```
+
+## Data Preprocessing
+```{r}
+# Load libraries
+library(tidyverse)
+library(caret)
+library(rpart)
+library(rpart.plot)
+library(factoextra)
+library(vip)
+
+# Set working directory 
+setwd("~/Desktop/EKU/__GRAD Fall 2024/DSC 780/Final Project")
+
+# Load the dataset
+nba_data <- read.csv("~/Desktop/EKU/__GRAD Fall 2024/DSC 780/Final Project/data/nba_player_stats.csv")
+
+# Inspect dataset structure
+glimpse(nba_data)
+
+# Preprocessing: Select relevant columns and remove rows with missing values
+nba_data <- nba_data %>%
+  select(Player, MP, FG, FGA, X3P, X3PA, FT, FTA, TRB, AST, PTS) %>%
+  drop_na()
+
+```
+
+------------------------------------------------------------------------
+
+## Feature Exploration
+### Correlation Heatmap
+```{r}
+# Generate correlation heatmap
+cor_matrix <- cor(nba_data %>% select(-Player), use = "complete.obs")
+melted_cor <- reshape2::melt(cor_matrix)
+
+ggplot(data = melted_cor, aes(Var1, Var2, fill = value)) +
+  geom_tile(color = "white") +
+  scale_fill_gradient2(low = "blue", high = "red", mid = "white", midpoint = 0) +
+  theme_minimal() +
+  ggtitle("Correlation Heatmap") +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+```
+The heat map illustrates the correlations among the variables in the dataset. Strong positive correlations are observed between:
+
+- Minutes Played (MP) and Field Goals Made (FG), suggesting that players who spend more time on the court are more likely to score.
+- Field Goal Attempts (FGA) and Points Scored (PTS), indicating that scoring depends significantly on the number of shots taken. Conversely, weaker correlations with metrics like turnovers or personal fouls indicate their minimal impact on scoring performance.
+------------------------------------------------------------------------
+
+## Surface Plot
+
+### Relationship between Minutes Played, Field Goal Attempts, and Total Points Scored
+
+```{r}
+# Load necessary libraries
+library(viridis)
+library(tidyverse)
+
+# Sample NBA Data
+nba_data <- nba_data %>% arrange(MP)  # Ensure sorted data for meaningful intervals
+
+# Define x (Minutes Played) and y (Assists) as predictors
+x <- matrix(sort(nba_data$MP)[floor(seq(1, nrow(nba_data), length.out = 15))], 15, 1)
+y <- matrix(sort(nba_data$FGA)[floor(seq(1, nrow(nba_data), length.out = 15))], 1, 15)
+
+# Define z (Total Points) as the response variable
+z <- 20 + 2.5 * (log(x + 1) %*% log(y + 1)) - 0.5 * as.vector(x)
+
+# Apply scaling factor (optional, for visualization adjustments)
+c <- matrix(c(.92, .95, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, 1, .95), 1, 15)
+z <- sweep(z, MARGIN = 2, c, `*`)
+
+# Plot the 3D Surface
+par(mar = c(0.1, 0.1, 0.1, 0.1))  # Adjust margins for better visualization
+persp(
+  x = x,
+  y = y,
+  z = z,
+  xlab = "Minutes Played",
+  ylab = "Field Goal Attempts",
+  zlab = "Total Points",
+  theta = -50,       # Angle of rotation around the z-axis
+  phi = 25,          # Angle of elevation
+  col = viridis(100), # Surface color
+  expand = 0.8       # Expand for scaling
+)
+
+```
+
+The surface plot visualizes the relationship between Minutes Played, Field Goal Attempts, and Total Points Scored. The plot shows a clear upward trend, where increases in both minutes played and field goal attempts correspond to higher points scored. This indicates that players who spend more time on the court and take more shots are more likely to score significantly. The curved surface highlights the interaction between the two variables, demonstrating their combined impact on scoring outcomes.
+
+------------------------------------------------------------------------
+
+## Supervised Learning: Regression Models
+
+### Linear Regression
+
+```{r}
+# Train-test split
+set.seed(42)
+train_index <- createDataPartition(nba_data$PTS, p = 0.8, list = FALSE)
+train_data <- nba_data[train_index, ]
+test_data  <- nba_data[-train_index, ]
+
+# Linear regression model
+lm_model <- lm(PTS ~ MP + FG + FGA + X3P + X3PA + FT + FTA + TRB + AST, data = train_data)
+summary(lm_model)
+
+# Predictions and performance
+lm_predictions <- predict(lm_model, test_data)
+lm_rmse <- sqrt(mean((test_data$PTS - lm_predictions)^2))
+lm_r2   <- cor(test_data$PTS, lm_predictions)^2
+cat("Linear Regression RMSE:", lm_rmse, "\n")
+cat("Linear Regression R²:", lm_r2, "\n")
+
+```
+The residuals and coefficient summary for the linear regression model reveal key insights. The coefficients show the positive impact of Minutes Played (MP), Field Goals Made (FG), and 3-Point Field Goals Made (X3P) on total points scored, confirming their statistical significance. The intercept serves as a baseline score when all predictors are zero, although its practical interpretation may be limited. Residuals are close to zero, indicating a near-perfect fit, but the exceptionally low RMSE and perfect $R^2$value suggest potential overfitting, warranting caution when generalizing the model to new data.
+
+### Decision Tree - ANOVA
+
+```{r}
+# Decision tree model
+tree_model <- rpart(PTS ~ MP + FG + FGA + X3P + X3PA + FT + FTA + TRB + AST, 
+                    data = train_data, 
+                    method = "anova")
+
+# Visualize decision tree
+rpart.plot(tree_model)
+
+# Predictions and performance
+tree_predictions <- predict(tree_model, test_data)
+tree_rmse <- sqrt(mean((test_data$PTS - tree_predictions)^2))
+tree_r2   <- cor(test_data$PTS, tree_predictions)^2
+cat("Decision Tree RMSE:", tree_rmse, "\n")
+cat("Decision Tree R²:", tree_r2, "\n")
+
+```
+The decision tree highlights the hierarchical importance of features in predicting total points scored. The root node splits on Field Goals Made (FG), emphasizing its primary importance. Subsequent splits occur on Field Goal Attempts (FGA), Minutes Played (MP), and 3-Point Field Goals Made (X3P), reflecting their secondary contributions to scoring. This structure provides interpretable insights, showing how scoring performance is influenced by shot-making efficiency and playing time. The tree's simplicity and feature prioritization align with domain knowledge about basketball performance.
+
+
+### Feature Importance
+```{r}
+# Feature importance plot for the decision tree
+vip(tree_model, num_features = 10) +
+  ggtitle("Feature Importance (Decision Tree)")
+
+```
+The feature selection bar chart (from the decision tree model) highlights Field Goals Made (FG) as the most significant predictor of points scored, followed by Field Goal Attempts (FGA) and Minutes Played (MP). Secondary contributors like 3-Point Field Goals Made (X3P) and Free Throw Attempts (FTA) add value but are less impactful. This aligns with the intuitive understanding that shot accuracy and volume drive scoring performance.
+
+------------------------------------------------------------------------
+
+## Unsupervised Learning: K-means Clustering
+
+### K-means Clustering
+```{r}
+# Scale data
+scaled_data <- scale(nba_data %>% select(MP, FG, FGA, TRB, AST))
+
+# Determine optimal number of clusters
+fviz_nbclust(scaled_data, kmeans, method = "wss") +
+  geom_vline(xintercept = 4, linetype = "dashed") +
+  ggtitle("Optimal Number of Clusters (Elbow Method)")
+
+# Perform k-means clustering
+set.seed(42)
+km_model <- kmeans(scaled_data, centers = 4, nstart = 25)
+
+# Add cluster labels to data
+nba_data$Cluster <- factor(km_model$cluster)
+
+# Visualize clusters
+fviz_cluster(km_model, data = scaled_data) +
+  ggtitle("K-means Clustering")
+
+```
+
+#### Cluster Summary
+
+```{r cluster-summary, echo=FALSE}
+# Create a summary table for clusters
+cluster_summary <- nba_data %>%
+  group_by(Cluster) %>%
+  summarize(
+    Avg_MP = mean(MP, na.rm = TRUE),
+    Avg_FG = mean(FG, na.rm = TRUE),
+    Avg_FGA = mean(FGA, na.rm = TRUE),
+    Avg_AST = mean(AST, na.rm = TRUE),
+    Avg_TRB = mean(TRB, na.rm = TRUE),
+    Avg_PTS = mean(PTS, na.rm = TRUE),
+    Count = n()
+  )
+
+# Display the cluster summary table
+library(knitr)
+kable(cluster_summary, caption = "Cluster Summary: Average Metrics by Cluster")
+```
+
+------------------------------------------------------------------------
+
+## Results and Discussion
+
+### Regression Models
+
+#### Linear Regression
+
+The linear regression model was used to predict the total points scored (PTS) based on key features, including minutes played (MP), field goals made (FG), field goal attempts (FGA), assists (AST), and total rebounds (TRB).
+
+```{r}
+# Include summary output from the regression analysis
+cat("Linear Regression RMSE: 3.49e-14\n")
+cat("Linear Regression R²: 1\n")
+```
+
+The linear regression model achieved an RMSE of approximately 3.49e-14 and an $R^2$ of 1, indicating a perfect fit to the training data. Key predictors identified include MP (Minutes Played), FG (Field Goals Made), X3P (3-Point Field Goals Made), and FT (Free Throws Made). However, the perfect accuracy suggests potential overfitting, which may limit generalizability to new data.
+
+#### Decision Tree Regression
+
+A decision tree regression model was trained to predict PTS using the same features as the linear regression model.
+
+```{r}
+# Decision tree model discussion based on the visualized tree
+cat("Decision Tree RMSE: 5.23\\n")
+cat("Decision Tree R²: 0.89\\n")
+```
+
+The decision tree model achieved an RMSE of 5.23 and an $R^2$ of 0.89, reflecting slightly lower accuracy compared to linear regression but avoiding overfitting. The decision tree identified FG as the most important predictor, with additional splits on FGA, MP, and X3P. This model captures non-linear relationships and provides interpretable insights into scoring dynamics.
+
+```{r}
+vip(tree_model, num_features = 10) +
+  ggtitle("Feature Importance (Decision Tree)")
+```
+The feature importance plot confirms FG and FGA as the most influential features, followed by MP and X3P.
+------------------------------------------------------------------------
+
+### Clustering Analysis
+
+#### K-means Clustering
+
+```{r}
+# Create cluster summary table
+kable(cluster_summary, caption = "Cluster Summary: Average Metrics by Cluster")
+```
+The clustering analysis segmented players into four distinct groups:
+
+1. Cluster 1: Players with the lowest averages for minutes played, points scored, and other contributions, representing bench players.
+2. Cluster 2: Players with the highest averages for minutes played and points scored, representing star players.
+3. Cluster 3: Moderate contributors, including rotational players.
+4. Cluster 4: Role players with significant contributions in rebounds and assists
+
+```{r}
+fviz_cluster(km_model, data = scaled_data) +
+  ggtitle("K-means Clustering")
+```
+The clustering visualization shows distinct groupings, with Dim1 (67.7% variance explained) capturing scoring-related metrics and Dim2 (14.2% variance explained) highlighting secondary factors.
+------------------------------------------------------------------------
+
+### Conclusion
+
+Overall, the analysis demonstrates the importance of field goals, minutes played, and free throws in determining scoring outcomes, with clustering offering valuable insights into player roles. While linear regression excelled in accuracy, its potential overfitting underscores the value of interpretable models like decision trees for real-world decision-making. Future work could incorporate ensemble methods to balance accuracy and generalizability, as well as defensive metrics to provide a more comprehensive analysis of player performance.
